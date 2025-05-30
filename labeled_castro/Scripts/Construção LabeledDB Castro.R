@@ -15,7 +15,7 @@ db <- relationdb %>% filter(quote != "") %>% # manter só os com quote
 #...Funções e dados úteis  ---------
 #.......Lista de países e coalizões ---------
 # Parto da lista de Castro (com países e coalizões)
-country_list <- read_csv2("castro_countrylist.csv", col_select = 2) %>% 
+country_list <- read_csv2(here::here("labeled_castro", "castro_countrylist.csv"), col_select = 2) %>% 
   rename(country = x)
 
 # Necessário ajustar alguns dos nomes, pois nao aparecem assim no texto
@@ -103,11 +103,11 @@ coalition_list <- country_list %>% filter(
 
 ##...Placeholder países -------
 # para acelerar os matches, é interessante substituir países por um placeholder
-substituir_paises <- function(txt){
+substituir_paises <- function(txt, placeholder = "COUNTRYNAME"){
   # nota: função só substitui quando está em caixa alta
   sub_str <- str_replace_all(txt,
                              paste0(country_list$regex, collapse = "|"),
-                             "COUNTRYNAME")
+                             placeholder)
   sub_str
 }
 
@@ -143,8 +143,14 @@ db_quotes <- db_quotes %>% mutate(quote_type = if_else(str_detect(sub_quote, "\\
 db_quotes <- db_quotes %>% mutate(sub_quote = substituir_paises(toupper(quote)))
 db_quotes <- db_quotes %>% mutate(country_count = str_count(sub_quote, "COUNTRYNAME"))
 
+# 0-1 não pode ser usado pra treinar, porque falta contexto. precisaríamos de textos com mais informação
+# zeroonecountry_quotes <- db_quotes %>% filter(country_count <= 1)
+# country_quotes <- db_quotes %>% filter(country_count >= 2)
+morecountry_quotes <- db_quotes %>% filter(country_count > 2)
 
-# trabalhar só com 2country quotes
+###___________________V1: TWO-COUNTRY QUOTES___________________-----------
+
+# Vamos trabalhar em um primeiro momento só com 2country quotes. 1504 observações.
 # >> nota: às vezes as duas entidades mencionadas na cita não são as de C1 e C2. Vai depender
 # de outro filtro mais adiante.
 twocountry_quotes <- db_quotes %>% filter(country_count == 2)
@@ -171,6 +177,9 @@ twocountry_quotes <- twocountry_quotes %>% left_join(db)
 ##...Masking de Sender e Target cf colunas ----
 # Como vou iniciar com casos só de 2 países, não preciso me preocupar com o masking dos terceiros.
 # Ideia agora é substituir o país das colunas Country1 por SENDER e Country2 por TARGET
+# >> Testar depois se incluindo COUNTRY depois de SENDER e TARGET melhora desempenho (SENDER C, TGT C)
+# >> pq teria mais relação com o contexto
+
 # Idealmente, faria isso sem ter que converter o texto completo em caixa alta, o que pode prejudicar modelos
 # Sender tem, em teoria (pelas regras do report, mas nem sempre), caixa alta. Os demais não.
 
@@ -202,17 +211,51 @@ twocountry_quotes <- twocountry_quotes %>%
 
 
 ###......Exportando primeira versão do banco pra explorar modelos ----
-twocountry_quotes %>% 
-  select(obs_id, quote_id, e_date, ENB_Nr, Country1, Country2, 
-         quote, masked_quote, cooperation, relation) %>% 
-  write.csv2("twocountry_v1.csv")
+# twocountry_quotes %>% 
+#   select(obs_id, quote_id, e_date, ENB_Nr, Country1, Country2, 
+#          quote, masked_quote, cooperation, relation) %>% 
+#   write.csv2("twocountry_v1.csv")
+
+
+###___________________ FULL COUNTRY QUOTES___________________-----------
+# Essa versão usa todos os quotes que apresentam 2 ou mais menções a países no texto. 
+# 3327 observações de quotes -> agora, como temos mais de 2 por quote, o n de obs de interações é maior
+country_quotes <- morecountry_quotes
+
+country_quotes <- country_quotes %>% left_join(db) # Incluir dados completos
+
+country_quotes <- country_quotes %>% mutate(country = Country1) %>% left_join(country_list) %>% 
+  rename(sender = country, sender_regex = regex)
+country_quotes <- country_quotes %>% mutate(country = Country2) %>% left_join(country_list) %>% 
+  rename(target = country, target_regex = regex)
+# Mascarar os nomes dos países SENDER e TARGET
+country_quotes <- country_quotes %>%  
+  mutate(masked_quote = str_replace_all(toupper(quote), sender_regex, "SENDER"))
+country_quotes <- country_quotes %>%  
+  mutate(masked_quote = str_replace_all(masked_quote, target_regex, "TARGET"))
 
 ##...Masking de demais países e coalizões ----
 # Para 3+ entidades mencionadas, vou precisar fazer o masking dos demais. Idealmente, com as variações
 # o modelo entenderia que "SENDER, with TGT, opposes OTHER" é diferente de "SEND, with OTHER, opposes TGT"
 # Em termos de tempo de processamento, esse é o pior pra fazer, esp. se considerar variações de caps.
 
+#___________________ V2: 3COUNTRY QUOTES ---------
+# Pegar a função de países mencionados (da versão de classificação por regra)
+# Substituir o país por OTHER
+tricountry_quotes <- country_quotes %>% filter(country_count == 3) %>% 
+  mutate(masked_quote = substituir_paises(masked_quote, "OTHER"))
 
+# Juntar os casos de 2 e 3 países
+v2_quotes <- bind_rows(twocountry_quotes, tricountry_quotes)
 
+v2_quotes %>%
+  select(obs_id, quote_id, e_date, ENB_Nr, Country1, Country2,
+         quote, masked_quote, cooperation, relation) %>%
+  write.csv2("countries_v2.csv")
 
-## feito o masking, posso treinar modelo
+#___________________ V3: MORE COUNTRY QUOTES ---------
+
+# São muitos casos com mais de 3 países.
+country_quotes %>% group_by(country_count) %>% summarize(n = n())
+# Dúvida - Quando temos vários OTHER-COUNTRY, devo:
+# a) manter com OTHER-COUNTRY em todos? ou b) diferenciar - OTHER-COUNTRY1 e OTHER-COUNTRY2?
