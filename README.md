@@ -13,5 +13,7 @@ A execução do projeto é dividida nas seguintes etapas:
 
 ## Estrutura do repositório
 **/scrape**: código e resultado da coleta de dados no site do ENB. Atualmente, inclui eventos relacionados à UNFCCC entre 1995 e 2021.
+
 **/labeled_castro**: tratamento do banco de dados de Castro para uso no classificador. Inclui também o script da avaliação e tentativa de construção de banco diretamente com os dados do ENB, usando estratégias de rule-based NLP.
+
 **/classifier_relation**: treinamento e avaliação de classificadores para identificar tipo de relações entre países em textos como os do ENB
